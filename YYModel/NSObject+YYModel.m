@@ -572,6 +572,7 @@ static force_inline id YYValueForMultiKeys(__unsafe_unretained NSDictionary *dic
         [customMapper enumerateKeysAndObjectsUsingBlock:^(NSString *propertyName, NSString *mappedToKey, BOOL *stop) {
             _YYModelPropertyMeta *propertyMeta = allPropertyMetas[propertyName];
             if (!propertyMeta) return;
+            // 将自定义映射关系的属性移除
             [allPropertyMetas removeObjectForKey:propertyName];
             
             if ([mappedToKey isKindOfClass:[NSString class]]) {
@@ -589,12 +590,16 @@ static force_inline id YYValueForMultiKeys(__unsafe_unretained NSDictionary *dic
                 }
                 // 大于1说明是keyPath映射
                 if (keyPath.count > 1) {
-                    // question:这里感觉直接可以用valueForKeyPath获取，不知道为什么要特意写个方法来解析NSArray？
+                    // question: 这里感觉直接可以用valueForKeyPath获取，不知道为什么要特意写个方法来解析NSArray？MAYDONE
+                    // answer: valueForKeyPath可能会因为无法识别方法而崩溃，比如:
+                    // @{@"key" : @"value"} 对应的映射是 @{@"propertyName" : @"key.value"}
+                    // 这样就会因为NSNumber不是key-value编码类型而失败
                     propertyMeta->_mappedToKeyPath = keyPath;
                     [keyPathPropertyMetas addObject:propertyMeta];
                 }
-                // question:这个next的作用还待考察？DONE
-                // 被映射到相同的key上
+                // question: 这个next的作用还待考察？DONE
+                // answer: 被映射到相同的key上，所赋的值也是一致的，只不过根据property的类型进行对应的转换
+                // 如果映射到相同的key，mapper[mappedToKey]有值，新的propertyMeta插入到链表头部，并更新mapper存储链表头
                 propertyMeta->_next = mapper[mappedToKey] ?: nil;
                 mapper[mappedToKey] = propertyMeta;
                 
@@ -630,7 +635,7 @@ static force_inline id YYValueForMultiKeys(__unsafe_unretained NSDictionary *dic
             }
         }];
     }
-    // 剩下的没有做自定义映射的属性
+    // 剩下的没有做自定义映射的属性 {没在modelCustomPropertyMapper做映射的实例自带属性}
     // 也把它整合进mapper
     [allPropertyMetas enumerateKeysAndObjectsUsingBlock:^(NSString *name, _YYModelPropertyMeta *propertyMeta, BOOL *stop) {
         propertyMeta->_mappedToKey = name;
@@ -639,8 +644,9 @@ static force_inline id YYValueForMultiKeys(__unsafe_unretained NSDictionary *dic
     }];
     
     if (mapper.count) _mapper = mapper;
-    // keyPath映射
+    // keyPath映射属性
     if (keyPathPropertyMetas) _keyPathPropertyMetas = keyPathPropertyMetas;
+    // 多映射属性(在dic的key可能存在多个的情况下，可以指定这个；当用其中的一个key到dic获取到value时，后续的key将会被略过)
     if (multiKeysPropertyMetas) _multiKeysPropertyMetas = multiKeysPropertyMetas;
     
     _classInfo = classInfo;
@@ -1174,10 +1180,10 @@ static void ModelSetWithDictionaryFunction(const void *_key, const void *_value,
     __unsafe_unretained _YYModelPropertyMeta *propertyMeta = [meta->_mapper objectForKey:(__bridge id)(_key)];
     __unsafe_unretained id model = (__bridge id)(context->model);
     while (propertyMeta) {
+        // 映射到同个key之后，这里循环赋给属性相同的值
         if (propertyMeta->_setter) {
             ModelSetValueForProperty(model, (__bridge __unsafe_unretained id)_value, propertyMeta);
         }
-        // 映射到同个key之后，这里循环赋给相同的值
         propertyMeta = propertyMeta->_next;
     };
 }
@@ -1228,7 +1234,9 @@ static id ModelToJSONObjectRecursive(NSObject *model) {
         NSMutableDictionary *newDic = [NSMutableDictionary new];
         [((NSDictionary *)model) enumerateKeysAndObjectsUsingBlock:^(NSString *key, id obj, BOOL *stop) {
             NSString *stringKey = [key isKindOfClass:[NSString class]] ? key : key.description;
+            // enumerate里面的return，相当于for里面的continue
             if (!stringKey) return;
+            // 嵌套解析
             id jsonObj = ModelToJSONObjectRecursive(obj);
             if (!jsonObj) jsonObj = (id)kCFNull;
             newDic[stringKey] = jsonObj;
@@ -1271,11 +1279,13 @@ static id ModelToJSONObjectRecursive(NSObject *model) {
     _YYModelMeta *modelMeta = [_YYModelMeta metaWithClass:[model class]];
     if (!modelMeta || modelMeta->_keyMappedCount == 0) return nil;
     NSMutableDictionary *result = [[NSMutableDictionary alloc] initWithCapacity:64];
-    __unsafe_unretained NSMutableDictionary *dic = result; // avoid retain and release in block
+    __unsafe_unretained NSMutableDictionary *dic = result; // avoid retain and release in block 弱引用
+    // 遍历所有属性
     [modelMeta->_mapper enumerateKeysAndObjectsUsingBlock:^(NSString *propertyMappedKey, _YYModelPropertyMeta *propertyMeta, BOOL *stop) {
         if (!propertyMeta->_getter) return;
         
         id value = nil;
+        // 这里是获取属性对应的值(转化成NSString或者NSNumber的)
         if (propertyMeta->_isCNumber) {
             value = ModelCreateNumberFromProperty(model, propertyMeta);
         } else if (propertyMeta->_nsType) {
@@ -1285,6 +1295,7 @@ static id ModelToJSONObjectRecursive(NSObject *model) {
             switch (propertyMeta->_type & YYEncodingTypeMask) {
                 case YYEncodingTypeObject: {
                     id v = ((id (*)(id, SEL))(void *) objc_msgSend)((id)model, propertyMeta->_getter);
+                    // 属性是自定义的对象，嵌套解析
                     value = ModelToJSONObjectRecursive(v);
                     if (value == (id)kCFNull) value = nil;
                 } break;
@@ -1300,29 +1311,33 @@ static id ModelToJSONObjectRecursive(NSObject *model) {
             }
         }
         if (!value) return;
-        
+        // 这里是根据map构造字典
         if (propertyMeta->_mappedToKeyPath) {
             NSMutableDictionary *superDic = dic;
             NSMutableDictionary *subDic = nil;
             for (NSUInteger i = 0, max = propertyMeta->_mappedToKeyPath.count; i < max; i++) {
                 NSString *key = propertyMeta->_mappedToKeyPath[i];
-                if (i + 1 == max) { // end
+                if (i + 1 == max) { // end  { ext = { d = Apple; }; }, 最后的key才赋值, 即superDic[@"d"] = @"Apple"
                     if (!superDic[key]) superDic[key] = value;
                     break;
                 }
                 
                 subDic = superDic[key];
                 if (subDic) {
+                    // 说明这一层字典已经有键值对了
                     if ([subDic isKindOfClass:[NSDictionary class]]) {
+                        // 拷贝成可变的（没这一句也可，因为刚开始时创建的都是NSMutableDictionary), 方便i + 1 == max时进行赋值
                         subDic = subDic.mutableCopy;
                         superDic[key] = subDic;
                     } else {
                         break;
                     }
                 } else {
+                    // key下没有value，创建可变字典赋给当前的key
                     subDic = [NSMutableDictionary new];
                     superDic[key] = subDic;
                 }
+                // 最顶层的字典(@{@"a" : @{@"b" : @"c"}}，即字典@{@"b" : @"c"})
                 superDic = subDic;
                 subDic = nil;
             }
@@ -1346,6 +1361,7 @@ static NSMutableString *ModelDescriptionAddIndent(NSMutableString *desc, NSUInte
         unichar c = [desc characterAtIndex:i];
         if (c == '\n') {
             for (NSUInteger j = 0; j < indent; j++) {
+                // 添加缩进，4空格一个单位
                 [desc insertString:@"    " atIndex:i + 1];
             }
             i += indent * 4;
@@ -1354,6 +1370,26 @@ static NSMutableString *ModelDescriptionAddIndent(NSMutableString *desc, NSUInte
     }
     return desc;
 }
+
+// kCFNull 单例
+// typedef struct __CFRuntimeBase {
+//    uintptr_t _cfisa;
+//    uint8_t _cfinfo[4];
+//    #if __LP64__
+//    uint32_t _rc;
+//    #endif
+// } CFRuntimeBase;
+// struct __CFNull {
+//     CFRuntimeBase _base;
+// };
+// static struct __CFNull __kCFNull = {
+//     {0, {0, 0, 0, 0x80}}
+// };
+
+// NULL     (void *)0       C指针的字面零值
+// nil      (id)0           Objective-C对象的字面零值
+// Nil      (Class)0        Objective-C类的字面零值
+// NSNull	[NSNull null]	用来表示零值的单独的对象(集合中无法存储nil，需要包装，看起来NSNull和kCFNull可以互相转换)
 
 /// Generaate a description string
 static NSString *ModelDescription(NSObject *model) {
@@ -1492,6 +1528,7 @@ static NSString *ModelDescription(NSObject *model) {
 
 @implementation NSObject (YYModel)
 
+// 对内方法/函数添加'_'前缀，对外去处此前缀，这种做法在CoreFoundation里面常见
 + (NSDictionary *)_yy_dictionaryWithJSON:(id)json {
     if (!json || json == (id)kCFNull) return nil;
     NSDictionary *dic = nil;
@@ -1554,23 +1591,29 @@ static NSString *ModelDescription(NSObject *model) {
     context.dictionary = (__bridge void *)(dic);
     
     // 这里为什么要用CF? 是因为效率原因，用enumate慢?
+    
+    // question: 这里为什么_keyMappedCount大于字典的count，就走前面这个分支？
     if (modelMeta->_keyMappedCount >= CFDictionaryGetCount((CFDictionaryRef)dic)) {
+        // ModelSetWithDictionaryFunction
+        // 根据dic中的key，去mapper里获取对应的propertyMeta
+        // 可以处理不同的属性映射到相同key
         CFDictionaryApplyFunction((CFDictionaryRef)dic, ModelSetWithDictionaryFunction, &context);
-        if (modelMeta->_keyPathPropertyMetas.count) {
-            // 映射到keyPath
+        if (modelMeta->_keyPathPropertyMetas) {
+            // 映射到keyPath @{@"a" : @"a.b"}
             CFArrayApplyFunction((CFArrayRef)modelMeta->_keyPathPropertyMetas,
                                  CFRangeMake(0, CFArrayGetCount((CFArrayRef)modelMeta->_keyPathPropertyMetas)),
                                  ModelSetWithPropertyMetaArrayFunction,
                                  &context);
         }
-        if (modelMeta->_multiKeysPropertyMetas.count) {
-            // 映射到多个key
+        if (modelMeta->_multiKeysPropertyMetas) {
+            // 映射到多个key @{@"a" : @[@"a" , @"b"]}
             CFArrayApplyFunction((CFArrayRef)modelMeta->_multiKeysPropertyMetas,
                                  CFRangeMake(0, CFArrayGetCount((CFArrayRef)modelMeta->_multiKeysPropertyMetas)),
                                  ModelSetWithPropertyMetaArrayFunction,
                                  &context);
         }
     } else {
+        // 所有属性都做一次赋值
         CFArrayApplyFunction((CFArrayRef)modelMeta->_allPropertyMetas,
                              CFRangeMake(0, modelMeta->_keyMappedCount),
                              ModelSetWithPropertyMetaArrayFunction,
