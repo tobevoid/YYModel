@@ -1591,9 +1591,12 @@ static NSString *ModelDescription(NSObject *model) {
     context.model = (__bridge void *)(self);
     context.dictionary = (__bridge void *)(dic);
     
+    // http://blog.ibireme.com/2015/10/23/ios_model_framework_benchmark/
     // 这里为什么要用CF? 是因为效率原因，用enumate慢?
+    // 对应上述链接第六条
     
     // question: 这里为什么_keyMappedCount大于字典的count，就走前面这个分支？
+    // 对应上述链接第8条
     // 这两个分支不论去掉那一个，程序依然可以正常运行，唯一的解释就是效率问题
     // 但实际上使用作者的测试程序，效率并没有明显的区别
     // 因为最终两个分支调用ModelSetValueForProperty的频率是一致的
