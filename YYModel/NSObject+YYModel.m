@@ -1593,6 +1593,14 @@ static NSString *ModelDescription(NSObject *model) {
     // 这里为什么要用CF? 是因为效率原因，用enumate慢?
     
     // question: 这里为什么_keyMappedCount大于字典的count，就走前面这个分支？
+    // 这两个分支不论去掉那一个，程序依然可以正常运行，唯一的解释就是效率问题
+    // 但实际上使用作者的测试程序，效率并没有明显的区别
+    // 因为最终两个分支调用ModelSetValueForProperty的频率是一致的
+    
+    // 不同的是，第一个分支直接针对dic进行操作，并且利用_YYModelPropertyMeta的_next属性，
+    // 达到针对映射到相同的key的情况下，能只取一次value的目的
+    // 而第二个分支则需要针对每个属性都获取一次value
+    // 除了这个区别，我想不出第二个不同点了。
     if (modelMeta->_keyMappedCount >= CFDictionaryGetCount((CFDictionaryRef)dic)) {
         // ModelSetWithDictionaryFunction
         // 根据dic中的key，去mapper里获取对应的propertyMeta
