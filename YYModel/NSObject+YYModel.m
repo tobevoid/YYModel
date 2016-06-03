@@ -735,6 +735,7 @@ static force_inline NSNumber *ModelCreateNumberFromProperty(__unsafe_unretained 
         case YYEncodingTypeFloat: {
             float num = ((float (*)(id, SEL))(void *) objc_msgSend)((id)model, meta->_getter);
             // question: 为什么只有浮点数需要检测这两项?
+            // https://github.com/ibireme/YYModel/issues/104
             if (isnan(num) || isinf(num)) return nil;
             return @(num);
         }
