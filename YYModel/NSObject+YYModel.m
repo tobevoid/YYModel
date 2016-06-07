@@ -422,6 +422,7 @@ static force_inline id YYValueForMultiKeys(__unsafe_unretained NSDictionary *dic
         }
     }
     if (propertyInfo.setter) {
+        // 是否有能力，如果属性是readonly，就不行了
         if ([classInfo.cls instancesRespondToSelector:propertyInfo.setter]) {
             meta->_setter = propertyInfo.setter;
         }
@@ -540,7 +541,7 @@ static force_inline id YYValueForMultiKeys(__unsafe_unretained NSDictionary *dic
     }
     
     // Create all property metas.
-    // 还是那个问题，用property做映射的话，一些没有getter和setter的Ivar是否能遍历的到？
+    // 还是那个问题，用property做映射的话，一些没有getter和setter的Ivar是否能遍历的到？不能
     NSMutableDictionary *allPropertyMetas = [NSMutableDictionary new];
     YYClassInfo *curClassInfo = classInfo;
     while (curClassInfo && curClassInfo.superCls != nil) { // recursive parse super class, but ignore root class (NSObject/NSProxy)
@@ -592,7 +593,7 @@ static force_inline id YYValueForMultiKeys(__unsafe_unretained NSDictionary *dic
                 if (keyPath.count > 1) {
                     // question: 这里感觉直接可以用valueForKeyPath获取，不知道为什么要特意写个方法来解析NSArray？MAYDONE
                     // answer: valueForKeyPath可能会因为无法识别方法而崩溃，比如:
-                    // @{@"key" : @"value"} 对应的映射是 @{@"propertyName" : @"key.value"}
+                    // @{@"key" : {@"value" : @""}} 对应的映射是 @{@"propertyName" : @"key.value"}
                     // 这样就会因为NSNumber不是key-value编码类型而失败
                     propertyMeta->_mappedToKeyPath = keyPath;
                     [keyPathPropertyMetas addObject:propertyMeta];
