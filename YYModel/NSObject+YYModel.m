@@ -116,6 +116,7 @@ static force_inline NSNumber *YYNSNumberCreateFromID(__unsafe_unretained id valu
             if (num == (id)kCFNull) return nil;
             return num;
         }
+        // 避免精度损失
         if ([(NSString *)value rangeOfCharacterFromSet:dot].location != NSNotFound) {
             // 小数
             const char *cstring = ((NSString *)value).UTF8String;
@@ -409,10 +410,12 @@ static force_inline id YYValueForMultiKeys(__unsafe_unretained NSDictionary *dic
         }
     }
     meta->_cls = propertyInfo.cls;
-    
+    // 根据字典，生成不同的实例类型
     if (generic) {
+        // 属性是集合类型时用到
         meta->_hasCustomClassFromDictionary = [generic respondsToSelector:@selector(modelCustomClassForDictionary:)];
     } else if (meta->_cls && meta->_nsType == YYEncodingTypeNSUnknown) {
+        // 属性不是集合类型，并且是自定义类
         meta->_hasCustomClassFromDictionary = [meta->_cls respondsToSelector:@selector(modelCustomClassForDictionary:)];
     }
     
